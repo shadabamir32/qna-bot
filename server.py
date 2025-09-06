@@ -1,18 +1,16 @@
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_perplexity import ChatPerplexity
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_ollama.chat_models import ChatOllama
+from langchain_core.messages import HumanMessage
 from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from sqlalchemy import create_engine
 from langchain_community.document_loaders import WebBaseLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-import bs4
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_ollama import OllamaEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains.history_aware_retriever import create_history_aware_retriever
@@ -57,8 +55,8 @@ def create_chain(vectorStore):
         ("user", "{input}")
     ])
 
-    llm = ChatPerplexity(
-        model="sonar",
+    llm = ChatOllama(
+        model="llama3.1",
         temperature=0.1
     )
 
@@ -121,14 +119,14 @@ def retrive_document_from_web():
     data = loader.load()
 
     if not data:
-        raise ValueError(f"No data found at {url}")
+        raise ValueError(f"No data found.")
     # Split the document into smaller chunks
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=10)
     splitedDocument = text_splitter.split_documents(data)
     if not splitedDocument:
         raise ValueError("No text chunks created from document")
-    
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+
+    embeddings = OllamaEmbeddings(model="nomic-embed-text:v1.5")
     vectorStore = FAISS.from_documents(splitedDocument, embeddings)
 
     return vectorStore
@@ -145,13 +143,3 @@ if __name__ == "__main__":
         response = process_chat(chain, user_input)
         # print(type(response))
         print(response['answer'])
-
-# def stream_chat(chain, question, session_id: str="default_session"):
-#     def event_generator():
-#         response_stream = chain.stream(
-#             {"question": question},
-#             config={"configurable": {"session_id": session_id}}
-#         )
-#         for chunk in response_stream:
-#             yield f"data: {chunk.content}\n\n"
-#     return StreamingResponse(event_generator(), media_type="text/event-stream") 
