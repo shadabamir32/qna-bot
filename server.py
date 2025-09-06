@@ -9,18 +9,29 @@ from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from sqlalchemy import create_engine
+from langchain_community.document_loaders import WebBaseLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+import bs4
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains.history_aware_retriever import create_history_aware_retriever
+from langchain.chains.retrieval import create_retrieval_chain
 
 app = FastAPI(title="Q&A Chatbot", version="1.0.0")
 
 load_dotenv()
 engine = create_engine("sqlite:///chat_history.db")
 
+
 # Endpoint to handle chat messages
 @app.post("/chat/{session_id}", tags=["Chat"])
 def chat(question: str, session_id: str):
-    chain = create_chain()
+    vectorStore = retrive_document_from_web()
+    chain = create_chain(vectorStore)
+
     response = process_chat(chain, question, session_id)
-    return JSONResponse(content=response, status_code=200)
+    return JSONResponse(content=response['answer'], status_code=200)
 
 
 # Retruve all chat history for a session
@@ -38,57 +49,109 @@ def clear_history(session_id: str):
     history.clear()
     return JSONResponse(content={"message": "History cleared"}, status_code=200)
 
-def create_chain():
+# Create the chat chain with history
+def create_chain(vectorStore):
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "Your a question answering bot. Use very little words to answer the question. Dont use citations unless asked."),
-        MessagesPlaceholder(variable_name="history"),
-        ("user", "{question}")
+        ("system", "Answer the user's questions based on the context: {context}"),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "{input}")
     ])
 
     llm = ChatPerplexity(
         model="sonar",
-        temperature=0.2
+        temperature=0.1
     )
 
-    # parser = StrOutputParser()
+    combine_docs_chain = create_stuff_documents_chain(
+        llm=llm,
+        prompt=prompt
+    )
+    
+    retriever = vectorStore.as_retriever(search_kwargs={"k": 3})
 
-    chain = prompt | llm
+    # History-aware retriever prompt
+    retriever_prompt = ChatPromptTemplate.from_messages([
+        ("system", "Based on the conversation, rewrite the user query to improve retrieval."),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "{input}"),
+    ])
+    
+    history_aware_retriever = create_history_aware_retriever(
+        llm=llm,
+        retriever=retriever,
+        prompt=retriever_prompt
+    )
+
+    retrieval_chain = create_retrieval_chain(
+        history_aware_retriever,
+        combine_docs_chain
+    )
 
     chain_with_history = RunnableWithMessageHistory(
-        chain,
+        retrieval_chain,
         create_db,
-        input_messages_key="question",
-        history_messages_key="history",
+        output_messages_key="answer",
+        input_messages_key="input",
+        history_messages_key="chat_history",
     )
 
     return chain_with_history
+
+# Initialize or retrieve the database for chat history
 def create_db(session_id: str):
     return SQLChatMessageHistory(
         session_id=session_id, connection=engine
     )
 
-def process_chat(chain, question, session_id: str="default_session"):
-    response = chain.invoke(
-        {"question": question},
+# Process chat input and generate response
+def process_chat(chain, question, session_id: str="default"):
+    return chain.invoke(
+        {"input": question},
         config={"configurable": {"session_id": session_id}}
     )
 
-    # Convert into a clean dict
-    response_dict = {
-        "answer": response.content,
-        "citations": response.additional_kwargs.get("citations", []),
-        "search_results": response.additional_kwargs.get("search_results", []),
-        "metadata": response.response_metadata,
-        "usage": response.usage_metadata,
-    }
-    return response_dict
+#RAG
+def retrive_document_from_web():
+    # Load the web page
+    loader = WebBaseLoader(
+        web_path=(
+            "https://www.barandbench.com/news/litigation/delhi-court-allows-engineer-rashid-to-attend-parliament-to-vote-in-vice-president-election",
+        )
+    )
+    data = loader.load()
 
+    if not data:
+        raise ValueError(f"No data found at {url}")
+    # Split the document into smaller chunks
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=10)
+    splitedDocument = text_splitter.split_documents(data)
+    if not splitedDocument:
+        raise ValueError("No text chunks created from document")
+    
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+    vectorStore = FAISS.from_documents(splitedDocument, embeddings)
+
+    return vectorStore
+
+vectorStore=None
 if __name__ == "__main__":
-    chain = create_chain()
+    vectorStore = retrive_document_from_web()
+    chain = create_chain(vectorStore)
 
     while True:
         user_input = input("You: ")
         if user_input.lower() == 'exit':
             break
         response = process_chat(chain, user_input)
-        print("Assistant:", response['answer'])
+        # print(type(response))
+        print(response['answer'])
+
+# def stream_chat(chain, question, session_id: str="default_session"):
+#     def event_generator():
+#         response_stream = chain.stream(
+#             {"question": question},
+#             config={"configurable": {"session_id": session_id}}
+#         )
+#         for chunk in response_stream:
+#             yield f"data: {chunk.content}\n\n"
+#     return StreamingResponse(event_generator(), media_type="text/event-stream") 
