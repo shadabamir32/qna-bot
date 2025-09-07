@@ -15,9 +15,12 @@ from langchain_community.vectorstores import FAISS
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains.history_aware_retriever import create_history_aware_retriever
 from langchain.chains.retrieval import create_retrieval_chain
+from langchain_community.tools import DuckDuckGoSearchResults
+from langchain.tools.retriever import create_retriever_tool
+from langchain.agents import create_tool_calling_agent, AgentExecutor
 
 app = FastAPI(title="Q&A Chatbot", version="1.0.0")
-
+vectorStore=None
 load_dotenv()
 engine = create_engine("sqlite:///chat_history.db")
 
@@ -50,50 +53,54 @@ def clear_history(session_id: str):
 # Create the chat chain with history
 def create_chain(vectorStore):
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "Answer the user's questions based on the context: {context}"),
+        ("system", "You are a helpful AI assistant. Use the tools to answer user queries based on the context provided. If the context does not contain the answer, respond with 'I don't know'."),
         MessagesPlaceholder(variable_name="chat_history"),
-        ("user", "{input}")
+        ("user", "{input}"),
+        MessagesPlaceholder(variable_name='agent_scratchpad')
     ])
 
     llm = ChatOllama(
         model="llama3.1",
-        temperature=0.1
-    )
-
-    combine_docs_chain = create_stuff_documents_chain(
-        llm=llm,
-        prompt=prompt
+        temperature=0.7
     )
     
     retriever = vectorStore.as_retriever(search_kwargs={"k": 3})
 
     # History-aware retriever prompt
-    retriever_prompt = ChatPromptTemplate.from_messages([
-        ("system", "Based on the conversation, rewrite the user query to improve retrieval."),
-        MessagesPlaceholder(variable_name="chat_history"),
-        ("user", "{input}"),
-    ])
+    # retriever_prompt = ChatPromptTemplate.from_messages([
+    #     ("system", "Based on the conversation, rewrite the user query to improve retrieval."),
+    #     MessagesPlaceholder(variable_name="chat_history"),
+    #     ("user", "{input}"),
+    # ])
     
-    history_aware_retriever = create_history_aware_retriever(
-        llm=llm,
+    # history_aware_retriever = create_history_aware_retriever(
+    #     llm=llm,
+    #     retriever=retriever,
+    #     prompt=retriever_prompt
+    # )
+
+    retriever_tool = create_retriever_tool(
         retriever=retriever,
-        prompt=retriever_prompt
+        name="langgraph_search",
+        description="Search for information about LangGraph. For any questions about LangGraph, you must use this tool!",
     )
+    search_tool = create_search_tool()
+    
+    tools = [retriever_tool, search_tool]
 
-    retrieval_chain = create_retrieval_chain(
-        history_aware_retriever,
-        combine_docs_chain
-    )
+    agent = create_tool_calling_agent(llm, tools, prompt)
 
-    chain_with_history = RunnableWithMessageHistory(
-        retrieval_chain,
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+    agent_with_chat_history = RunnableWithMessageHistory(
+        agent_executor,
         create_db,
-        output_messages_key="answer",
+        output_messages_key="output",
         input_messages_key="input",
         history_messages_key="chat_history",
     )
 
-    return chain_with_history
+    return agent_with_chat_history
 
 # Initialize or retrieve the database for chat history
 def create_db(session_id: str):
@@ -113,7 +120,7 @@ def retrive_document_from_web():
     # Load the web page
     loader = WebBaseLoader(
         web_path=(
-            "https://www.barandbench.com/news/litigation/delhi-court-allows-engineer-rashid-to-attend-parliament-to-vote-in-vice-president-election",
+            "https://langchain-ai.github.io/langgraph/",
         )
     )
     data = loader.load()
@@ -121,7 +128,7 @@ def retrive_document_from_web():
     if not data:
         raise ValueError(f"No data found.")
     # Split the document into smaller chunks
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=10)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     splitedDocument = text_splitter.split_documents(data)
     if not splitedDocument:
         raise ValueError("No text chunks created from document")
@@ -131,7 +138,12 @@ def retrive_document_from_web():
 
     return vectorStore
 
-vectorStore=None
+# Create a search tool using DuckDuckGo
+def create_search_tool():
+    search_tool = DuckDuckGoSearchResults(max_results=2)
+    return search_tool
+
+
 if __name__ == "__main__":
     vectorStore = retrive_document_from_web()
     chain = create_chain(vectorStore)
@@ -142,4 +154,4 @@ if __name__ == "__main__":
             break
         response = process_chat(chain, user_input)
         # print(type(response))
-        print(response['answer'])
+        print(response['output'])
