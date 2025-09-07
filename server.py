@@ -32,7 +32,7 @@ def chat(question: str, session_id: str):
     chain = create_chain(vectorStore)
 
     response = process_chat(chain, question, session_id)
-    return JSONResponse(content=response['answer'], status_code=200)
+    return JSONResponse(content={"response": response['output']}, status_code=200)
 
 
 # Retruve all chat history for a session
@@ -77,7 +77,7 @@ def create_chain(vectorStore):
 
     agent = create_tool_calling_agent(llm, tools, prompt)
 
-    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
 
     agent_with_chat_history = RunnableWithMessageHistory(
         agent_executor,
