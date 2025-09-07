@@ -53,7 +53,7 @@ def clear_history(session_id: str):
 # Create the chat chain with history
 def create_chain(vectorStore):
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a helpful AI assistant. Use the tools to answer user queries based on the context provided. If the context does not contain the answer, respond with 'I don't know'."),
+        ("system", "You are a helpful AI assistant. Use the tools to answer the user's questions only when required."),
         MessagesPlaceholder(variable_name="chat_history"),
         ("user", "{input}"),
         MessagesPlaceholder(variable_name='agent_scratchpad')
@@ -65,19 +65,6 @@ def create_chain(vectorStore):
     )
     
     retriever = vectorStore.as_retriever(search_kwargs={"k": 3})
-
-    # History-aware retriever prompt
-    # retriever_prompt = ChatPromptTemplate.from_messages([
-    #     ("system", "Based on the conversation, rewrite the user query to improve retrieval."),
-    #     MessagesPlaceholder(variable_name="chat_history"),
-    #     ("user", "{input}"),
-    # ])
-    
-    # history_aware_retriever = create_history_aware_retriever(
-    #     llm=llm,
-    #     retriever=retriever,
-    #     prompt=retriever_prompt
-    # )
 
     retriever_tool = create_retriever_tool(
         retriever=retriever,
